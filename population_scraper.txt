@@ -1,0 +1,111 @@
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+import pyodbc
+
+# URL for country-wise population data
+url = "https://www.worldometers.info/world-population/population-by-country/"
+
+# Fetch data
+response = requests.get(url)
+soup = BeautifulSoup(response.text, "html.parser")
+
+# Extract table data
+table = soup.find("table", {"id": "example2"})  # Find the correct table
+rows = table.find("tbody").find_all("tr")
+
+# Extract Data (All Columns)
+data = []
+for row in rows:
+    cols = row.find_all("td")
+    
+    country = cols[1].text.strip()
+    population = int(cols[2].text.strip().replace(",", ""))  # Remove commas
+    yearly_change = cols[3].text.strip()
+    net_change = cols[4].text.strip().replace(",", "")
+    density = cols[5].text.strip().replace(",", "")
+    land_area = cols[6].text.strip().replace(",", "")
+    migrants = cols[7].text.strip().replace(",", "")
+    fertility_rate = cols[8].text.strip()
+    median_age = cols[9].text.strip()
+    urban_pop = cols[10].text.strip()
+    world_share = cols[11].text.strip()
+    
+    data.append([
+        country, population, yearly_change, net_change, density,
+        land_area, migrants, fertility_rate, median_age, urban_pop, world_share
+    ])
+
+# Convert to DataFrame
+columns = ["Country", "Population", "Yearly_Change", "Net_Change", "Density",
+           "Land_Area", "Migrants", "Fertility_Rate", "Median_Age", "Urban_Pop", "World_Share"]
+df = pd.DataFrame(data, columns=columns)
+
+# Connect to SQL Server
+server = 'DESKTOP-8BH5R74\SQLEXPRESS'
+database = 'SQLQueryTable'
+table_name = 'CountryPopulationDetails'
+
+conn = pyodbc.connect(f'DRIVER={{SQL Server}};SERVER={server};DATABASE={database};Trusted_Connection=yes;')
+cursor = conn.cursor()
+
+# Create Table if not exists
+cursor.execute(f"""
+    IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '{table_name}')
+    CREATE TABLE {table_name} (
+        Country NVARCHAR(255) PRIMARY KEY,
+        Population BIGINT,
+        Yearly_Change NVARCHAR(50),
+        Net_Change BIGINT,
+        Density FLOAT,
+        Land_Area BIGINT,
+        Migrants BIGINT,
+        Fertility_Rate FLOAT,
+        Median_Age FLOAT,
+        Urban_Pop NVARCHAR(50),
+        World_Share NVARCHAR(50)
+    )
+""")
+conn.commit()
+
+# Insert or Update using MERGE
+for _, row in df.iterrows():
+    merge_query = f"""
+        MERGE INTO {table_name} AS target
+        USING (SELECT 
+            '{row["Country"].replace("'", "''")}' AS Country, 
+            {row["Population"]} AS Population, 
+            '{row["Yearly_Change"]}' AS Yearly_Change, 
+            {row["Net_Change"]} AS Net_Change, 
+            {row["Density"]} AS Density, 
+            {row["Land_Area"]} AS Land_Area, 
+            {row["Migrants"]} AS Migrants, 
+            {row["Fertility_Rate"]} AS Fertility_Rate, 
+            {row["Median_Age"]} AS Median_Age, 
+            '{row["Urban_Pop"]}' AS Urban_Pop, 
+            '{row["World_Share"]}' AS World_Share) AS source
+        ON target.Country = source.Country
+        WHEN MATCHED THEN 
+            UPDATE SET 
+                Population = source.Population,
+                Yearly_Change = source.Yearly_Change,
+                Net_Change = source.Net_Change,
+                Density = source.Density,
+                Land_Area = source.Land_Area,
+                Migrants = source.Migrants,
+                Fertility_Rate = source.Fertility_Rate,
+                Median_Age = source.Median_Age,
+                Urban_Pop = source.Urban_Pop,
+                World_Share = source.World_Share
+        WHEN NOT MATCHED THEN
+            INSERT (Country, Population, Yearly_Change, Net_Change, Density, Land_Area, Migrants, Fertility_Rate, Median_Age, Urban_Pop, World_Share) 
+            VALUES (source.Country, source.Population, source.Yearly_Change, source.Net_Change, source.Density, source.Land_Area, source.Migrants, source.Fertility_Rate, source.Median_Age, source.Urban_Pop, source.World_Share);
+    """
+    cursor.execute(merge_query)
+
+conn.commit()
+cursor.close()
+conn.close()
+
+# Output for Power BI
+print(df.head())  # Display first 5 rows
